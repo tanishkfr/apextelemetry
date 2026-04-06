@@ -1,627 +1,770 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
 
-const INITIAL_MOCK_RACE = {
-  lap: 34,
-  totalLaps: 57,
-  flag: "GREEN",
-  gapToLeader: "+4.821s",
-  tyreLaps: 18,
-  tyreCompound: "MEDIUM",
-  tyreWear: 67,
-  tyreDeltaPerLap: +0.043,
-  fuelLoad: 42.3,
-  fuelDelta: -0.2,
-  ERSDeployment: 78,
-  sectors: [22.431, 31.819, 19.204],
-  sectorDeltas: [-0.041, +0.183, -0.009],
-  pitWindowOpen: true,
-  pitWindowLaps: [35, 41],
-  currentLapTime: 73.454,
-  bestLapTime: 73.209,
-};
+const C = {
+  bgVoid:    'bg-[#050505]',
+  bgSurface: 'bg-[#0D0F10]',
+  bgRaise:   'bg-[#141618]',
+  border:    'border-white/[0.06]',
+  borderHi:  'border-white/[0.12]',
 
-const COMMS_LOG = [
-  { id: 1, sender: 'ENGINEER', msg: 'Box to overtake, box to overtake.' },
-  { id: 2, sender: 'DRIVER', msg: 'Tyres are dropping off.' },
-  { id: 3, sender: 'ENGINEER', msg: 'Understood. Pit window opens next lap.' },
-  { id: 4, sender: 'DRIVER', msg: 'Copy that.' },
-];
+  textPrimary:   'text-[#ECEEF0]',
+  textSecondary: 'text-[#8A9099]',
+  textDim:       'text-[#404548]',
 
-const STYLES = `
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+  mint:    '#00FFAA',
+  amber:   '#F5A623',
+  crimson: '#FF2A2A',
+} as const;
 
-:root {
-  --bg: #050505;
-  --surface-1: #0D0F10;
-  --surface-2: #1A1C1E;
-  --text-primary: #F0F2F0;
-  --accent-optimal: #00FFAA;
-  --accent-warning: #F5A623;
-  --accent-critical: #FF2A2A;
-  --accent-neutral: #5A6370;
-  --border: 1px solid rgba(255,255,255,0.06);
+interface RaceState {
+  lap: number;
+  lapProgress: number;
+  flag: 'GREEN'|'YELLOW'|'SAFETY_CAR';
+  trackTemp: number;
+  airTemp: number;
+
+  tyreCompound: 'S'|'M'|'H';
+  tyreLapsOld: number;
+  tyreWear: number;
+  tyreDegPerLap: number;
+
+  currentLapTime: number;
+  bestLapTime: number;
+  sectorTimes: [number, number, number];
+  sectorDeltas: [number, number, number];
+
+  fuelKg: number;
+  fuelTarget: number;
+  ersPercent: number;
+
+  gapToLeader: number;
+  gapDelta: number;
+
+  optimalPitLap: number;
+  pitWindowOpen: boolean;
+
+  deltaHistory: number[];
+
+  radioLog: Array<{
+    id: number;
+    from: 'ENG'|'DRIVER';
+    text: string;
+  }>;
 }
 
-* {
-  box-sizing: border-box;
+function pointsToPath(pts: [number, number][]): string {
+  if (pts.length === 0) return '';
+  if (pts.length === 1) return `M ${pts[0][0]},${pts[0][1]}`;
+  
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = i === 0 ? pts[0] : pts[i - 1];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = i + 2 < pts.length ? pts[i + 2] : p2;
+
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+  }
+  return d;
 }
 
-body {
-  margin: 0;
-  background-color: var(--bg);
-  color: var(--text-primary);
-  font-family: system-ui, sans-serif;
-  overflow: hidden;
-  user-select: none;
-}
+const TickNumber = ({ value, className }: { value: string | number, className?: string }) => (
+  <div className={`relative inline-flex overflow-hidden ${className || ''}`}>
+    <AnimatePresence mode="popLayout">
+      <motion.span
+        key={value}
+        initial={{ y: -10, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 10, opacity: 0 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
+      >
+        {value}
+      </motion.span>
+    </AnimatePresence>
+  </div>
+);
 
-.font-mono {
-  font-family: 'JetBrains Mono', monospace;
-}
-
-.apex-container {
-  display: flex;
-  width: 100vw;
-  height: 100vh;
-  padding: 16px;
-  gap: 16px;
-}
-
-.rail-left {
-  width: 200px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.center-stage {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.rail-right {
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.block {
-  background-color: var(--surface-1);
-  border: var(--border);
-  border-radius: 4px;
-  padding: 16px;
-  transition: opacity 80ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.hover-group:hover .block:not(:hover) {
-  opacity: 0.25;
-}
-
-.label {
-  font-size: 10px;
-  color: var(--accent-neutral);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 8px;
-}
-
-.value {
-  font-size: 24px;
-  font-weight: 500;
-}
-
-@keyframes tick {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-  100% { transform: scale(1); }
-}
-
-.tick-anim {
-  display: inline-block;
-  animation: tick 120ms linear;
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 8px;
-  border-radius: 2px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-}
-
-.pill.green { background: rgba(0, 255, 170, 0.1); color: var(--accent-optimal); border: 1px solid rgba(0, 255, 170, 0.2); }
-.pill.yellow { background: rgba(245, 166, 35, 0.1); color: var(--accent-warning); border: 1px solid rgba(245, 166, 35, 0.2); }
-.pill.red { background: rgba(255, 42, 42, 0.1); color: var(--accent-critical); border: 1px solid rgba(255, 42, 42, 0.2); }
-
-.graph-container {
-  flex: 1;
-  position: relative;
-  background: var(--surface-2);
-  border: var(--border);
-  border-radius: 4px;
-  padding: 24px 16px 16px 16px;
-  display: flex;
-  flex-direction: column;
-}
-
-.graph-area {
-  flex: 1;
-  position: relative;
-}
-
-.graph-x-axis {
-  height: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  font-size: 10px;
-  color: var(--accent-neutral);
-  margin-top: 8px;
-}
-
-.graph-y-grid {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  pointer-events: none;
-}
-
-.graph-y-line {
-  border-top: 1px dashed rgba(255, 255, 255, 0.04);
-  width: 100%;
-}
-
-.pit-window-band {
-  position: absolute;
-  top: 0; bottom: 0;
-  background: rgba(0, 255, 170, 0.06);
-  pointer-events: none;
-}
-
-.current-lap-line {
-  position: absolute;
-  top: 0; bottom: 0;
-  width: 1px;
-  background: var(--accent-optimal);
-  pointer-events: none;
-}
-
-.curve-line {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  pointer-events: none;
-}
-
-.curve-path-current {
-  fill: none;
-  stroke: var(--accent-warning);
-  stroke-width: 1;
-  filter: drop-shadow(0 0 2px var(--accent-warning));
-}
-
-.curve-path-fresh {
-  fill: none;
-  stroke: var(--accent-optimal);
-  stroke-width: 1;
-}
-
-@keyframes pulse {
-  0% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.8; }
-  50% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
-  100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
-}
-
-.crossover-pulse {
-  position: absolute;
-  width: 8px; height: 8px;
-  background: var(--accent-optimal);
-  border-radius: 50%;
-  animation: pulse 1.5s infinite cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.hover-col {
-  position: absolute;
-  top: 0; bottom: 0;
-  cursor: crosshair;
-}
-
-.hover-col:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.tooltip {
-  position: absolute;
-  background: var(--surface-1);
-  border: var(--border);
-  padding: 4px 8px;
-  font-size: 11px;
-  color: var(--text-primary);
-  pointer-events: none;
-  white-space: nowrap;
-  transform: translate(-50%, -120%);
-  z-index: 10;
-}
-
-.sectors-row {
-  display: flex;
-  gap: 16px;
-  height: 100px;
-}
-
-.sector-card {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-}
-
-.sector-time {
-  font-size: 20px;
-  margin-bottom: 4px;
-}
-
-.sector-delta {
-  font-size: 12px;
-}
-
-.comms-log {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.comm-msg {
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.slider-container {
-  height: 120px;
-  display: flex;
-  flex-direction: column;
-}
-
-.slider-track {
-  flex: 1;
-  background: var(--surface-2);
-  border: var(--border);
-  border-radius: 4px;
-  position: relative;
-  margin-top: 16px;
-  overflow: hidden;
-}
-
-.slider-thumb {
-  position: absolute;
-  top: 0; bottom: 0; left: 0;
-  width: 60px;
-  background: var(--accent-neutral);
-  cursor: grab;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-}
-
-.slider-thumb:active {
-  cursor: grabbing;
-}
-
-.slider-fill {
-  position: absolute;
-  top: 0; bottom: 0; left: 0;
-  background: rgba(0, 255, 170, 0.1);
-  pointer-events: none;
-}
-
-@keyframes borderPulse {
-  0% { border-color: rgba(0, 255, 170, 0.2); box-shadow: 0 0 0 rgba(0, 255, 170, 0); }
-  50% { border-color: rgba(0, 255, 170, 1); box-shadow: 0 0 10px rgba(0, 255, 170, 0.5); }
-  100% { border-color: rgba(0, 255, 170, 0.2); box-shadow: 0 0 0 rgba(0, 255, 170, 0); }
-}
-
-.transmitted {
-  animation: borderPulse 1s infinite;
-}
-
-.color-optimal { color: var(--accent-optimal); }
-.color-warning { color: var(--accent-warning); }
-.color-critical { color: var(--accent-critical); }
-.color-neutral { color: var(--accent-neutral); }
-`;
-
-function useTickValue(value: number | string) {
-  const [tick, setTick] = useState(0);
-  const prevValue = useRef(value);
+const TyreDeltaGraph = ({ race }: { race: RaceState }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(680);
+  const height = 220;
 
   useEffect(() => {
-    if (prevValue.current !== value) {
-      setTick(t => t + 1);
-      prevValue.current = value;
-    }
-  }, [value]);
-
-  return <span key={tick} className="tick-anim font-mono">{value}</span>;
-}
-
-export default function APEXTelemetry() {
-  const [race, setRace] = useState(INITIAL_MOCK_RACE);
-  const [sliderPos, setSliderPos] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [transmitted, setTransmitted] = useState(false);
-  const sliderRef = useRef<HTMLDivElement>(null);
-  const [hoveredLap, setHoveredLap] = useState<number | null>(null);
-
-  useEffect(() => {
-    const styleEl = document.createElement('style');
-    styleEl.innerHTML = STYLES;
-    document.head.appendChild(styleEl);
-    return () => { document.head.removeChild(styleEl); };
+    if (!containerRef.current) return;
+    const obs = new ResizeObserver((entries) => {
+      setWidth(entries[0].contentRect.width);
+    });
+    obs.observe(containerRef.current);
+    return () => obs.disconnect();
   }, []);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setRace(prev => {
-        const newLap = prev.lap + (Math.random() > 0.8 ? 1 : 0);
-        const newTyreWear = Math.min(100, prev.tyreWear + (0.3 + Math.random() * 0.4));
-        const newSectors = prev.sectors.map(s => s + (Math.random() * 0.2 - 0.1));
-        const newSectorDeltas = prev.sectorDeltas.map(d => d + (Math.random() * 0.1 - 0.05));
-        const newFuelLoad = Math.max(0, prev.fuelLoad - 0.05);
-        
-        return {
-          ...prev,
-          lap: newLap > prev.totalLaps ? prev.totalLaps : newLap,
-          tyreWear: newTyreWear,
-          sectors: newSectors,
-          sectorDeltas: newSectorDeltas,
-          fuelLoad: newFuelLoad,
-        };
-      });
-    }, 800);
-    return () => clearInterval(interval);
-  }, []);
+  const LAP_START = 30;
+  const LAP_END = 57;
+  const DELTA_MIN = -0.5;
+  const DELTA_MAX = 3.5;
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if (transmitted) return;
-    setIsDragging(true);
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
+  const xScale = (lap: number) => ((lap - LAP_START) / (LAP_END - LAP_START)) * width;
+  const yScale = (d: number) => height - ((d - DELTA_MIN) / (DELTA_MAX - DELTA_MIN)) * height;
 
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isDragging || !sliderRef.current || transmitted) return;
-    const rect = sliderRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-    const percentage = x / rect.width;
-    setSliderPos(percentage);
-  };
+  const currentPts: [number, number][] = [];
+  const freshPts: [number, number][] = [];
 
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (!isDragging) return;
-    setIsDragging(false);
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    if (sliderPos > 0.95) {
-      setSliderPos(1);
-      setTransmitted(true);
-      setTimeout(() => {
-        setTransmitted(false);
-        setSliderPos(0);
-      }, 3000);
+  for (let lap = LAP_START; lap <= LAP_END; lap++) {
+    const currentDelta = race.tyreDegPerLap * (race.tyreLapsOld + (lap - race.lap));
+    currentPts.push([xScale(lap), yScale(currentDelta)]);
+
+    if (lap < race.optimalPitLap) {
+      freshPts.push([xScale(lap), yScale(currentDelta)]);
     } else {
-      setSliderPos(0);
+      const freshDelta = race.tyreDegPerLap * (lap - race.optimalPitLap) * 0.65;
+      freshPts.push([xScale(lap), yScale(freshDelta)]);
     }
-  };
+  }
 
-  const startLap = 30;
-  const endLap = 57;
-  const totalGraphLaps = endLap - startLap + 1;
+  const currentPath = pointsToPath(currentPts);
+  const freshPath = pointsToPath(freshPts);
 
-  const getX = (lap: number) => ((lap - startLap) / (totalGraphLaps - 1)) * 100;
+  const ix = xScale(race.optimalPitLap);
+  const iy = yScale(0);
 
-  const currentCurve = Array.from({ length: totalGraphLaps }).map((_, i) => {
-    const lap = startLap + i;
-    if (lap < 16) return null;
-    const wearFactor = Math.pow((lap - 16) / 40, 2);
-    return { lap, y: 80 - wearFactor * 60 };
-  }).filter(p => p !== null) as {lap: number, y: number}[];
-
-  const freshCurve = Array.from({ length: totalGraphLaps }).map((_, i) => {
-    const lap = startLap + i;
-    return { lap, y: 60 };
-  });
-
-  const crossoverLap = 38;
+  const [hoverLap, setHoverLap] = useState<number | null>(null);
 
   return (
-    <div className="apex-container hover-group">
-      {/* LEFT RAIL */}
-      <div className="rail-left">
-        <div style={{ fontSize: '11px', color: 'var(--accent-optimal)', letterSpacing: '11px', fontWeight: 700, marginBottom: '8px' }}>
-          APEX
-        </div>
-        
-        <div className="block">
-          <div className="label">RACE STATUS</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <div className="value font-mono">L{useTickValue(race.lap)}<span style={{ fontSize: '14px', color: 'var(--accent-neutral)' }}>/{race.totalLaps}</span></div>
-            <div className="pill green">{race.flag}</div>
-          </div>
-          <div style={{ fontSize: '12px', color: 'var(--accent-neutral)', display: 'flex', justifyContent: 'space-between' }}>
-            <span>GAP TO LEADER</span>
-            <span className="font-mono color-warning">{useTickValue(race.gapToLeader)}</span>
-          </div>
-          <div style={{ fontSize: '12px', color: 'var(--accent-neutral)', display: 'flex', justifyContent: 'space-between', marginTop: '8px' }}>
-            <span>WEATHER</span>
-            <span>🌥 18°C</span>
-          </div>
-        </div>
+    <div className={`flex flex-col ${C.bgSurface} ${C.border} rounded-sm p-4 relative flex-1 min-h-[260px]`}>
+      <div className={`text-[10px] ${C.textSecondary} tracking-widest mb-2`}>PREDICTIVE TYRE DELTA</div>
+      <div className="relative flex-1" ref={containerRef}>
+        <svg width="100%" height="100%" className="absolute inset-0 overflow-visible">
+          <defs>
+            <filter id="amberGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="2" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+            <filter id="mintGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="2" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
 
-        <div className="block">
-          <div className="label">TYRE DATA</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <div className="pill yellow">{race.tyreCompound}</div>
-            <div className="font-mono" style={{ fontSize: '14px' }}>{useTickValue(race.tyreLaps)} LAPS</div>
-          </div>
-          <div style={{ height: '4px', background: 'var(--surface-2)', borderRadius: '2px', overflow: 'hidden', marginBottom: '8px' }}>
-            <div style={{ height: '100%', width: `${race.tyreWear}%`, background: 'var(--accent-warning)', transition: 'width 120ms linear' }}></div>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-            <span className="color-neutral">WEAR</span>
-            <span className="font-mono color-warning">{useTickValue(race.tyreWear.toFixed(1))}%</span>
-          </div>
-        </div>
+          {[0, 1, 2, 3].map(d => (
+            <line key={d} x1={0} x2={width} y1={yScale(d)} y2={yScale(d)} stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" />
+          ))}
 
-        <div className="block">
-          <div className="label">FUEL & ERS</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-            <span className="color-neutral">LOAD</span>
-            <span className="font-mono">{useTickValue(race.fuelLoad.toFixed(1))} kg</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <span className="color-neutral">DELTA</span>
-            <span className="font-mono color-critical">{useTickValue(race.fuelDelta.toFixed(1))} kg</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span className="color-neutral">ERS DEP.</span>
-            <span className="font-mono color-optimal">{useTickValue(race.ERSDeployment)}%</span>
-          </div>
-        </div>
-      </div>
+          <rect 
+            x={xScale(35)} 
+            width={xScale(41) - xScale(35)} 
+            y={0} height={height} 
+            fill="rgba(0,255,170,0.06)" 
+          />
+          <text x={xScale(35) + 4} y={12} fill={C.mint} fontSize="9" opacity={0.5} className="font-sans">PIT WINDOW</text>
 
-      {/* CENTER STAGE */}
-      <div className="center-stage">
-        <div className="graph-container block">
-          <div className="label">PREDICTIVE TYRE DELTA</div>
-          <div className="graph-area">
-            {/* Y Grid */}
-            <div className="graph-y-grid">
-              <div className="graph-y-line"></div>
-              <div className="graph-y-line"></div>
-              <div className="graph-y-line"></div>
-              <div className="graph-y-line"></div>
-            </div>
+          <motion.line 
+            x1={xScale(race.lap + race.lapProgress)} x2={xScale(race.lap + race.lapProgress)} 
+            y1={0} y2={height} 
+            stroke={C.mint} strokeWidth={1} opacity={0.5}
+          />
 
-            {/* Pit Window Band */}
-            <div className="pit-window-band" style={{ 
-              left: `${getX(race.pitWindowLaps[0])}%`, 
-              right: `${100 - getX(race.pitWindowLaps[1])}%` 
-            }}></div>
+          <motion.path 
+            d={currentPath} stroke={C.amber} strokeWidth={1.5} fill="none" filter="url(#amberGlow)"
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.2, ease: 'easeOut' }}
+          />
+          <motion.path 
+            d={freshPath} stroke={C.mint} strokeWidth={1.5} fill="none" filter="url(#mintGlow)"
+            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.2, ease: 'easeOut' }}
+          />
 
-            {/* Current Lap Line */}
-            <div className="current-lap-line" style={{ left: `${getX(race.lap)}%` }}></div>
+          <motion.circle cx={ix} cy={iy} r={4} fill={C.mint} />
+          <motion.circle cx={ix} cy={iy} fill="none" stroke={C.mint} strokeWidth={1}
+            animate={{ r: [4, 14], opacity: [0.8, 0] }}
+            transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
+          />
+        </svg>
 
-            {/* Curves */}
-            <svg className="curve-line" preserveAspectRatio="none" viewBox="0 0 100 100">
-              <path className="curve-path-current" d={`M ${currentCurve.map(p => `${getX(p.lap)},${100 - p.y}`).join(' L ')}`} />
-              <path className="curve-path-fresh" d={`M ${freshCurve.map(p => `${getX(p.lap)},${100 - p.y}`).join(' L ')}`} />
-            </svg>
+        <div 
+          className="absolute inset-0"
+          onMouseMove={(e) => {
+            const rect = containerRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const x = e.clientX - rect.left;
+            const lap = Math.round(LAP_START + (x / width) * (LAP_END - LAP_START));
+            setHoverLap(Math.max(LAP_START, Math.min(LAP_END, lap)));
+          }}
+          onMouseLeave={() => setHoverLap(null)}
+        />
 
-            {/* Crossover Pulse */}
-            <div className="crossover-pulse" style={{ 
-              left: `${getX(crossoverLap)}%`, 
-              top: `${100 - 60}%` 
-            }}></div>
-
-            {/* Hover Columns */}
-            {Array.from({ length: totalGraphLaps }).map((_, i) => {
-              const lap = startLap + i;
-              return (
-                <div 
-                  key={lap} 
-                  className="hover-col" 
-                  style={{ left: `${getX(lap) - 100/(totalGraphLaps-1)/2}%`, width: `${100/(totalGraphLaps-1)}%` }}
-                  onMouseEnter={() => setHoveredLap(lap)}
-                  onMouseLeave={() => setHoveredLap(null)}
-                >
-                  {hoveredLap === lap && (
-                    <div className="tooltip" style={{ left: '50%', top: `${100 - (lap < crossoverLap ? 80 - Math.pow((lap - 16) / 40, 2) * 60 : 60)}%` }}>
-                      <span className="font-mono">+{((lap - 30) * 0.043).toFixed(3)}s / LAP</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div className="graph-x-axis">
-            <span>L30</span>
-            <span>L35</span>
-            <span>L40</span>
-            <span>L45</span>
-            <span>L50</span>
-            <span>L55</span>
-          </div>
-        </div>
-
-        <div className="sectors-row">
-          {race.sectors.map((sec, i) => {
-            const delta = race.sectorDeltas[i];
-            const isFaster = delta < 0;
-            return (
-              <div key={i} className="sector-card block">
-                <div className="label">SECTOR {i + 1}</div>
-                <div className="sector-time font-mono">{useTickValue(sec.toFixed(3))}</div>
-                <div className={`sector-delta font-mono ${isFaster ? 'color-optimal' : 'color-critical'}`}>
-                  {useTickValue((isFaster ? '' : '+') + delta.toFixed(3))}
-                </div>
+        <AnimatePresence>
+          {hoverLap !== null && (
+            <motion.div 
+              className={`absolute ${C.bgRaise} ${C.borderHi} rounded-sm p-2 font-['JetBrains_Mono'] text-[11px] pointer-events-none z-10`}
+              style={{ left: xScale(hoverLap), top: yScale(race.tyreDegPerLap * (race.tyreLapsOld + (hoverLap - race.lap))) - 40, x: '-50%' }}
+              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            >
+              <div style={{ color: C.amber }}>CUR: +{(race.tyreDegPerLap * (race.tyreLapsOld + (hoverLap - race.lap))).toFixed(3)}s</div>
+              <div style={{ color: C.mint }}>
+                NEW: +{(hoverLap < race.optimalPitLap ? race.tyreDegPerLap * (race.tyreLapsOld + (hoverLap - race.lap)) : race.tyreDegPerLap * (hoverLap - race.optimalPitLap) * 0.65).toFixed(3)}s
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+      <div className={`flex justify-between mt-2 text-[10px] ${C.textSecondary}`}>
+        <span>L30</span><span>L35</span><span>L40</span><span>L45</span><span>L50</span><span>L55</span>
+      </div>
+    </div>
+  );
+};
+
+const SectorStrip = ({ race }: { race: RaceState }) => {
+  return (
+    <div className={`grid grid-cols-3 divide-x divide-white/[0.06] ${C.bgSurface} ${C.border} rounded-sm`}>
+      {[0, 1, 2].map(i => {
+        const time = race.sectorTimes[i];
+        const delta = race.sectorDeltas[i];
+        const isFaster = delta < 0;
+        return (
+          <div key={i} className="p-3 flex flex-col items-center justify-center">
+            <div className={`text-[10px] ${C.textSecondary} tracking-widest mb-1`}>S{i + 1}</div>
+            <TickNumber value={time.toFixed(3)} className="text-lg font-['JetBrains_Mono']" />
+            <TickNumber 
+              value={(isFaster ? '' : '+') + delta.toFixed(3)} 
+              className={`text-xs font-['JetBrains_Mono'] ${isFaster ? 'text-[#00FFAA]' : 'text-[#FF2A2A]'}`} 
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const PedalTrace = ({ throttle, brake }: { throttle: number, brake: number }) => {
+  return (
+    <div className={`flex flex-col gap-2 ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+      <div className="flex items-center gap-3">
+        <div className={`w-6 text-[10px] ${C.textSecondary}`}>THR</div>
+        <div className="flex-1 h-[6px] bg-[#141618] rounded-sm overflow-hidden">
+          <motion.div 
+            className="h-full bg-[#00FFAA]" 
+            animate={{ width: `${throttle}%` }} 
+            transition={{ duration: 0.05, ease: 'linear' }} 
+          />
+        </div>
+        <div className={`w-10 text-right text-xs font-['JetBrains_Mono'] text-[#00FFAA]`}>{Math.round(throttle)}%</div>
+      </div>
+      <div className="flex items-center gap-3">
+        <div className={`w-6 text-[10px] ${C.textSecondary}`}>BRK</div>
+        <div className="flex-1 h-[6px] bg-[#141618] rounded-sm overflow-hidden">
+          <motion.div 
+            className="h-full bg-[#FF2A2A]" 
+            animate={{ width: `${brake}%` }} 
+            transition={{ duration: 0.05, ease: 'linear' }} 
+          />
+        </div>
+        <div className={`w-10 text-right text-xs font-['JetBrains_Mono'] text-[#FF2A2A]`}>{Math.round(brake)}%</div>
+      </div>
+    </div>
+  );
+};
+
+const DeltaHistory = ({ history, gapToLeader, gapDelta }: { history: number[], gapToLeader: number, gapDelta: number }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(200);
+  const height = 40;
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const obs = new ResizeObserver((entries) => {
+      setWidth(entries[0].contentRect.width);
+    });
+    obs.observe(containerRef.current);
+    return () => obs.disconnect();
+  }, []);
+
+  const min = Math.min(...history) - 0.1;
+  const max = Math.max(...history) + 0.1;
+  
+  const pts: [number, number][] = history.map((val, i) => [
+    (i / (history.length - 1 || 1)) * width,
+    height - ((val - min) / (max - min)) * height
+  ]);
+
+  const path = pointsToPath(pts);
+  const isClosing = gapDelta <= 0;
+  const color = isClosing ? C.mint : C.amber;
+
+  return (
+    <div className={`flex flex-col ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+      <div className={`text-[10px] ${C.textSecondary} tracking-widest mb-3`}>DELTA TO P1 — LAST 8 LAPS</div>
+      <div className="relative w-full h-[40px]" ref={containerRef}>
+        <svg width="100%" height="100%" className="overflow-visible">
+          <defs>
+            <filter id="historyGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="2" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+          <path d={path} stroke={color} strokeWidth={1} fill="none" filter="url(#historyGlow)" />
+          {pts.length > 0 && (
+            <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r={2} fill={color} />
+          )}
+        </svg>
+      </div>
+      <div className={`mt-2 font-['JetBrains_Mono'] text-sm flex items-center gap-2`}>
+        <TickNumber value={gapToLeader.toFixed(3)} />s
+        <span className={color === C.mint ? 'text-[#00FFAA]' : 'text-[#F5A623]'}>
+          {gapDelta > 0 ? '▲' : '▼'} {Math.abs(gapDelta).toFixed(3)}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+const RadioComms = ({ log }: { log: RaceState['radioLog'] }) => {
+  return (
+    <div className={`flex flex-col flex-1 ${C.bgSurface} ${C.border} rounded-sm p-4 overflow-hidden`}>
+      <div className={`text-[10px] ${C.textSecondary} tracking-widest mb-4`}>RADIO COMMS</div>
+      <div className="flex flex-col justify-end flex-1 gap-2">
+        <AnimatePresence initial={false}>
+          {log.map((msg, i) => {
+            const isEng = msg.from === 'ENG';
+            const badgeBorder = isEng ? 'border-[#00FFAA]/40' : 'border-[#F5A623]/40';
+            const badgeText = isEng ? 'text-[#00FFAA]' : 'text-[#F5A623]';
+            const badgeBg = isEng ? 'bg-[#00FFAA]/5' : 'bg-[#F5A623]/5';
+            
+            return (
+              <motion.div 
+                key={msg.id}
+                initial={{ opacity: 0, x: 12, height: 0 }}
+                animate={{ opacity: i === log.length - 1 ? 1 : 0.3, x: 0, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                className="flex items-start gap-2 font-['JetBrains_Mono'] text-[11px]"
+              >
+                <div className={`px-1.5 py-0.5 border rounded-sm ${badgeBorder} ${badgeText} ${badgeBg}`}>
+                  {msg.from}
+                </div>
+                <div className="text-[#ECEEF0] leading-relaxed pt-0.5">{msg.text}</div>
+              </motion.div>
             );
           })}
-        </div>
+        </AnimatePresence>
       </div>
+    </div>
+  );
+};
 
-      {/* RIGHT RAIL */}
-      <div className="rail-right">
-        <div className="block" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <div className="label">RADIO COMMS</div>
-          <div className="comms-log">
-            {COMMS_LOG.map((log, i) => (
-              <div key={log.id} className="comm-msg font-mono" style={{ opacity: 1 - (COMMS_LOG.length - 1 - i) * 0.25 }}>
-                <span style={{ color: log.sender === 'ENGINEER' ? 'var(--accent-optimal)' : 'var(--accent-neutral)' }}>{log.sender}: </span>
-                <span style={{ color: 'var(--text-primary)' }}>{log.msg}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+const BoxBoxProtocol = ({ race, onConfirm }: { race: RaceState, onConfirm: () => void }) => {
+  const [status, setStatus] = useState<'IDLE'|'DRAGGING'|'CONFIRMED'|'TRANSMITTED'>('IDLE');
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [trackWidth, setTrackWidth] = useState(0);
+  const thumbWidth = 48;
+  const x = useMotionValue(0);
 
-        <div className={`block slider-container ${transmitted ? 'transmitted' : ''}`} style={{ borderColor: race.pitWindowOpen ? 'rgba(0, 255, 170, 0.2)' : 'rgba(255, 42, 42, 0.2)' }}>
-          <div className="label" style={{ color: race.pitWindowOpen ? 'var(--accent-optimal)' : 'var(--accent-critical)' }}>
-            {transmitted ? 'TRANSMITTED 🟢' : 'INITIATE PIT CALL'}
-          </div>
-          <div 
-            className="slider-track" 
-            ref={sliderRef}
+  useEffect(() => {
+    if (trackRef.current) {
+      setTrackWidth(trackRef.current.offsetWidth);
+    }
+  }, []);
+
+  const handleDrag = () => {
+    if (status === 'TRANSMITTED') return;
+    setStatus('DRAGGING');
+  };
+
+  const handleDragEnd = () => {
+    if (status === 'TRANSMITTED') return;
+    const currentX = x.get();
+    const max = trackWidth - thumbWidth;
+    const ratio = currentX / max;
+
+    if (ratio < 0.92) {
+      animate(x, 0, { type: 'spring', stiffness: 400, damping: 30 });
+      const shake = async () => {
+        await animate(x, -4, { duration: 0.05 });
+        await animate(x, 4, { duration: 0.05 });
+        await animate(x, -3, { duration: 0.05 });
+        await animate(x, 3, { duration: 0.05 });
+        await animate(x, 0, { duration: 0.05 });
+      };
+      shake();
+      setStatus('IDLE');
+    } else {
+      setStatus('CONFIRMED');
+      animate(x, max, { duration: 0.1 }).then(() => {
+        setStatus('TRANSMITTED');
+        onConfirm();
+        setTimeout(() => {
+          setStatus('IDLE');
+          x.set(0);
+        }, 3000);
+      });
+    }
+  };
+
+  const pulseAnim = race.pitWindowOpen && status !== 'TRANSMITTED' ? {
+    boxShadow: ['inset 0 0 0px rgba(0,255,170,0)', 'inset 0 0 10px rgba(0,255,170,0.2)', 'inset 0 0 0px rgba(0,255,170,0)']
+  } : {};
+
+  return (
+    <div className="flex flex-col gap-3">
+      <motion.div 
+        className={`relative h-[60px] ${C.bgSurface} border rounded-sm flex items-center justify-center overflow-hidden`}
+        animate={status === 'TRANSMITTED' 
+          ? { 
+              borderColor: ['rgba(0,255,170,0.3)', 'rgba(0,255,170,1)', 'rgba(0,255,170,0.3)', 'rgba(0,255,170,1)', 'rgba(0,255,170,0.3)'],
+            } 
+          : { ...pulseAnim, borderColor: race.pitWindowOpen ? 'rgba(0,255,170,0.4)' : 'rgba(255,42,42,0.4)' }
+        }
+        transition={status === 'TRANSMITTED' ? { duration: 1.5 } : { duration: 2, repeat: Infinity }}
+      >
+        {status === 'TRANSMITTED' ? (
+          <motion.div 
+            initial={{ scale: 0.8, opacity: 0 }} 
+            animate={{ scale: 1, opacity: 1 }}
+            className={`font-sans font-bold text-[#00FFAA] tracking-widest text-sm`}
           >
-            <div className="slider-fill" style={{ width: `${sliderPos * 100}%` }}></div>
-            <div 
-              className="slider-thumb" 
-              style={{ 
-                left: `${sliderPos * 100}%`, 
-                transform: `translateX(-${sliderPos * 100}%)`,
-                transition: isDragging ? 'none' : 'left 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)'
-              }}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerLeave={handlePointerUp}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--bg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="13 17 18 12 13 7"></polyline>
-                <polyline points="6 17 11 12 6 7"></polyline>
-              </svg>
+            TRANSMITTED ✓
+          </motion.div>
+        ) : (
+          <>
+            <div className={`absolute inset-0 flex items-center justify-center font-sans font-bold tracking-widest text-sm ${race.pitWindowOpen ? 'text-[#00FFAA]/50' : 'text-[#FF2A2A]/50'} pointer-events-none`}>
+              INITIATE PIT CALL
             </div>
-          </div>
+            <div className="absolute inset-x-2 inset-y-2" ref={trackRef}>
+              <motion.div
+                className="absolute top-0 bottom-0 bg-[#141618] border border-white/[0.12] rounded-sm flex items-center justify-center cursor-grab active:cursor-grabbing z-10"
+                style={{ width: thumbWidth, x }}
+                drag="x"
+                dragConstraints={{ left: 0, right: trackWidth - thumbWidth }}
+                dragElastic={0}
+                dragMomentum={false}
+                onDrag={handleDrag}
+                onDragEnd={handleDragEnd}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8A9099" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="13 17 18 12 13 7"></polyline>
+                  <polyline points="6 17 11 12 6 7"></polyline>
+                </svg>
+              </motion.div>
+              <motion.div 
+                className="absolute top-0 bottom-0 left-0 bg-[#00FFAA]/10 rounded-sm pointer-events-none"
+                style={{ width: useTransform(x, v => v + thumbWidth/2) }}
+              />
+            </div>
+          </>
+        )}
+      </motion.div>
+
+      <div className={`flex flex-col gap-1 font-['JetBrains_Mono'] text-[10px] ${C.textSecondary} px-1`}>
+        <div className="flex justify-between">
+          <span>UNDERCUT DELTA</span>
+          <span className="text-[#ECEEF0]">+{ (race.tyreDegPerLap * (race.optimalPitLap - race.lap) * 1.2).toFixed(3) }s</span>
+        </div>
+        <div className="flex justify-between">
+          <span>FRESH SET ETA</span>
+          <span className="text-[#ECEEF0]">LAP {race.optimalPitLap + 1}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>EST. POSITION</span>
+          <span className="text-[#ECEEF0]">P4 → P6 → P4*</span>
         </div>
       </div>
     </div>
+  );
+};
+
+const RADIO_POOL = [
+  { from: 'ENG',    text: 'Pace nominal. Push S2 hard.' },
+  { from: 'DRIVER', text: 'Understeer turn 7, quite bad.' },
+  { from: 'ENG',    text: 'Gap closing. Maintain delta.' },
+  { from: 'DRIVER', text: 'Copy. Brake bias +1?' },
+  { from: 'ENG',    text: 'Box window lap 35. Confirm?' },
+  { from: 'DRIVER', text: 'Traffic S1. Lost two tenths.' },
+  { from: 'ENG',    text: 'Tyre temp good. Stay out.' },
+  { from: 'DRIVER', text: 'Rear feeling loose in slow.' },
+] as const;
+
+export default function APEXTelemetry() {
+  const [hoveredZone, setHoveredZone] = useState<string | null>(null);
+  const [pitConfirmed, setPitConfirmed] = useState(false);
+
+  const raceRef = useRef<RaceState>({
+    lap: 34,
+    lapProgress: 0.4,
+    flag: 'GREEN',
+    trackTemp: 42.1,
+    airTemp: 28.4,
+    tyreCompound: 'M',
+    tyreLapsOld: 18,
+    tyreWear: 67,
+    tyreDegPerLap: 0.043,
+    currentLapTime: 73.454,
+    bestLapTime: 73.209,
+    sectorTimes: [22.431, 31.819, 19.204],
+    sectorDeltas: [-0.041, +0.183, -0.009],
+    fuelKg: 42.3,
+    fuelTarget: 42.5,
+    ersPercent: 78,
+    gapToLeader: 4.821,
+    gapDelta: -0.012,
+    optimalPitLap: 38,
+    pitWindowOpen: false,
+    deltaHistory: [4.88, 4.86, 4.85, 4.89, 4.87, 4.84, 4.83, 4.821],
+    radioLog: [
+      { id: 1, from: 'ENG', text: 'Radio check.' },
+      { id: 2, from: 'DRIVER', text: 'Loud and clear.' },
+      { id: 3, from: 'ENG', text: 'Tyres look good, keep pushing.' },
+      { id: 4, from: 'DRIVER', text: 'Copy.' },
+    ]
+  });
+
+  const [race, setRace] = useState<RaceState>(raceRef.current);
+
+  const pedalRef = useRef({ throttle: 87, brake: 0 });
+  const [pedals, setPedals] = useState({ throttle: 87, brake: 0 });
+
+  const lastCommitTime = useRef(performance.now());
+  const commitCount = useRef(0);
+  const radioIndex = useRef(0);
+
+  useEffect(() => {
+    let rafId: number;
+    
+    const loop = (time: number) => {
+      const t = pedalRef.current.throttle;
+      const b = pedalRef.current.brake;
+      
+      let newT = t + (Math.random() * 20 - 10);
+      if (newT > 100) newT = 100;
+      if (newT < 0) newT = 0;
+      
+      let newB = 0;
+      if (newT < 20) {
+        newB = b + (Math.random() * 40 - 10);
+        if (newB > 100) newB = 100;
+        if (newB < 0) newB = 0;
+      }
+      
+      pedalRef.current = { throttle: newT, brake: newB };
+      setPedals({ throttle: newT, brake: newB });
+
+      if (time - lastCommitTime.current >= 900) {
+        lastCommitTime.current = time;
+        commitCount.current += 1;
+        
+        const r = { ...raceRef.current };
+        
+        r.lapProgress += 1 / 12;
+        if (r.lapProgress >= 1) {
+          r.lapProgress = 0;
+          if (r.lap < 57) {
+            r.lap += 1;
+            r.tyreLapsOld += 1;
+            r.tyreDegPerLap += 0.001;
+          }
+        }
+
+        const flagCycle = commitCount.current % 25;
+        r.flag = flagCycle < 20 ? 'GREEN' : 'YELLOW';
+
+        r.trackTemp += (Math.random() * 0.2 - 0.1);
+        r.airTemp += (Math.random() * 0.2 - 0.1);
+
+        r.tyreWear = Math.min(100, r.tyreWear + 0.5);
+        r.fuelKg = Math.max(0, r.fuelKg - 0.20);
+        r.ersPercent = Math.max(60, Math.min(100, r.ersPercent + (Math.random() * 4 - 2)));
+
+        const gapChange = (Math.random() * 0.1 - 0.05);
+        r.gapDelta = gapChange;
+        r.gapToLeader = Math.max(0, r.gapToLeader + gapChange);
+        
+        r.deltaHistory = [...r.deltaHistory.slice(1), r.gapToLeader];
+        r.pitWindowOpen = r.lap >= 35 && r.lap <= 41;
+
+        if (commitCount.current % 4 === 0) {
+          const nextMsg = RADIO_POOL[radioIndex.current % RADIO_POOL.length];
+          radioIndex.current += 1;
+          r.radioLog = [...r.radioLog.slice(1), { id: Date.now(), from: nextMsg.from, text: nextMsg.text }];
+        }
+
+        r.sectorDeltas = [
+          r.sectorDeltas[0] + (Math.random() * 0.04 - 0.02),
+          r.sectorDeltas[1] + (Math.random() * 0.04 - 0.02),
+          r.sectorDeltas[2] + (Math.random() * 0.04 - 0.02),
+        ];
+
+        raceRef.current = r;
+        setRace(r);
+      }
+      
+      rafId = requestAnimationFrame(loop);
+    };
+    
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  const handleConfirmPit = () => {
+    setPitConfirmed(true);
+    
+    const r = { ...raceRef.current };
+    r.radioLog = [...r.radioLog.slice(1), { id: Date.now(), from: 'ENG', text: 'Box box. Box box. Pit this lap.' }];
+    raceRef.current = r;
+    setRace(r);
+
+    setTimeout(() => {
+      setPitConfirmed(false);
+    }, 4000);
+  };
+
+  return (
+    <motion.div 
+      className={`w-screen h-screen overflow-hidden grid grid-cols-[200px_1fr_280px] ${C.bgVoid} text-[#ECEEF0] font-sans`}
+      animate={pitConfirmed ? {
+        boxShadow: [
+          'inset 0 0 0px #00FFAA00',
+          'inset 0 0 30px #00FFAA40',
+          'inset 0 0 0px #00FFAA00',
+        ]
+      } : { boxShadow: 'inset 0 0 0px #00FFAA00' }}
+      transition={{ duration: 0.8, repeat: pitConfirmed ? 3 : 0 }}
+      onMouseLeave={() => setHoveredZone(null)}
+    >
+      {/* LEFT RAIL */}
+      <motion.div 
+        className="p-4 overflow-hidden border-r border-white/[0.06] flex flex-col gap-5"
+        onMouseEnter={() => setHoveredZone('left')}
+        animate={{ opacity: hoveredZone && hoveredZone !== 'left' ? 0.25 : 1 }}
+        transition={{ duration: 0.08 }}
+      >
+        <div className="text-[11px] tracking-[0.3em] text-[#00FFAA] uppercase">APEX</div>
+        
+        <div className={`flex flex-col gap-3 ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+          <div className={`text-[10px] ${C.textSecondary} tracking-widest`}>RACE STATUS</div>
+          <div className="flex justify-between items-end">
+            <div className="flex items-baseline gap-1">
+              <span className="text-lg text-[#8A9099]">L</span>
+              <TickNumber value={race.lap} className="text-[22px] font-['JetBrains_Mono'] leading-none" />
+              <span className="text-sm text-[#8A9099] font-['JetBrains_Mono']">/57</span>
+            </div>
+            <motion.div 
+              className="px-2 py-0.5 rounded-sm text-[11px] font-bold tracking-wider border"
+              animate={{
+                borderColor: race.flag === 'GREEN' ? '#00FFAA' : '#F5A623',
+                color: race.flag === 'GREEN' ? '#00FFAA' : '#F5A623',
+                backgroundColor: race.flag === 'GREEN' ? 'rgba(0,255,170,0.1)' : 'rgba(245,166,35,0.1)'
+              }}
+              transition={{ duration: 0.3 }}
+            >
+              {race.flag === 'SAFETY_CAR' ? '● SC' : race.flag}
+            </motion.div>
+          </div>
+          <div className="h-[3px] bg-[#141618] rounded-full overflow-hidden">
+            <motion.div 
+              className="h-full bg-[#00FFAA]"
+              animate={{ width: `${race.lapProgress * 100}%` }}
+              transition={{ duration: 0.9, ease: 'linear' }}
+            />
+          </div>
+          <div className={`flex justify-between text-[11px] ${C.textSecondary} mt-1`}>
+            <span className="flex gap-1">TRACK <TickNumber value={race.trackTemp.toFixed(1)} />°C</span>
+            <span className="flex gap-1">AIR <TickNumber value={race.airTemp.toFixed(1)} />°C</span>
+          </div>
+        </div>
+
+        <div className={`flex flex-col gap-3 ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+          <div className={`text-[10px] ${C.textSecondary} tracking-widest`}>TYRE DATA</div>
+          <div className="flex justify-between items-center">
+            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold ${race.tyreCompound === 'M' ? 'border-[#F5A623] text-[#F5A623]' : race.tyreCompound === 'S' ? 'border-[#FF2A2A] text-[#FF2A2A]' : 'border-white text-white'}`}>
+              {race.tyreCompound}
+            </div>
+            <div className="font-['JetBrains_Mono'] text-sm flex gap-1">
+              <TickNumber value={race.tyreLapsOld} /> LAPS
+            </div>
+          </div>
+          <div className="h-[3px] bg-[#141618] rounded-full overflow-hidden">
+            <motion.div 
+              className="h-full"
+              animate={{ 
+                width: `${race.tyreWear}%`,
+                backgroundColor: race.tyreWear > 80 ? '#FF2A2A' : race.tyreWear > 60 ? '#F5A623' : '#00FFAA'
+              }}
+              transition={{ duration: 0.5 }}
+            />
+          </div>
+          <div className="flex justify-between text-[11px] font-['JetBrains_Mono']">
+            <span className={C.textSecondary}>DEG RATE</span>
+            <span className="text-[#F5A623]">+{race.tyreDegPerLap.toFixed(3)}s/LAP</span>
+          </div>
+        </div>
+
+        <div className={`flex flex-col gap-3 ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+          <div className={`text-[10px] ${C.textSecondary} tracking-widest`}>FUEL & ERS</div>
+          <div className="flex justify-between items-center font-['JetBrains_Mono'] text-sm">
+            <span className={C.textSecondary}>FUEL</span>
+            <div className="flex items-center gap-2">
+              <span className="flex gap-1"><TickNumber value={race.fuelKg.toFixed(1)} />kg</span>
+              <span className={`text-[11px] ${race.fuelKg - race.fuelTarget >= 0 ? 'text-[#00FFAA]' : 'text-[#FF2A2A]'}`}>
+                {race.fuelKg - race.fuelTarget >= 0 ? '+' : ''}{(race.fuelKg - race.fuelTarget).toFixed(1)}
+              </span>
+            </div>
+          </div>
+          <div className="flex justify-between items-center font-['JetBrains_Mono'] text-sm mt-2">
+            <span className={C.textSecondary}>ERS</span>
+            <span className="flex gap-1"><TickNumber value={Math.round(race.ersPercent)} />%</span>
+          </div>
+          <div className="h-[3px] bg-[#141618] rounded-full overflow-hidden">
+            <motion.div 
+              className="h-full"
+              animate={{ 
+                width: `${race.ersPercent}%`,
+                backgroundColor: race.ersPercent < 20 ? '#FF2A2A' : race.ersPercent < 50 ? '#F5A623' : '#00FFAA'
+              }}
+              transition={{ duration: 0.5 }}
+            />
+          </div>
+        </div>
+
+        <div className={`mt-auto flex flex-col gap-2 ${C.bgSurface} ${C.border} rounded-sm p-4`}>
+          <div className={`text-[10px] ${C.textSecondary} tracking-widest`}>GAP TO LEADER</div>
+          <div className="flex justify-between items-end font-['JetBrains_Mono']">
+            <div className="text-xl flex gap-1">
+              +<TickNumber value={race.gapToLeader.toFixed(3)} />s
+            </div>
+            <div className={`text-xs pb-1 ${race.gapDelta <= 0 ? 'text-[#00FFAA]' : 'text-[#FF2A2A]'}`}>
+              {race.gapDelta > 0 ? '▲' : '▼'} {Math.abs(race.gapDelta).toFixed(3)}
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* CENTER STAGE */}
+      <motion.div 
+        className="p-4 overflow-hidden border-r border-white/[0.06] flex flex-col gap-4 h-full"
+        onMouseEnter={() => setHoveredZone('center')}
+        animate={{ opacity: hoveredZone && hoveredZone !== 'center' ? 0.25 : 1 }}
+        transition={{ duration: 0.08 }}
+      >
+        <TyreDeltaGraph race={race} />
+        <SectorStrip race={race} />
+        <PedalTrace throttle={pedals.throttle} brake={pedals.brake} />
+        <DeltaHistory history={race.deltaHistory} gapToLeader={race.gapToLeader} gapDelta={race.gapDelta} />
+      </motion.div>
+
+      {/* RIGHT RAIL */}
+      <motion.div 
+        className="p-4 overflow-hidden flex flex-col gap-4"
+        onMouseEnter={() => setHoveredZone('right')}
+        animate={{ opacity: hoveredZone && hoveredZone !== 'right' ? 0.25 : 1 }}
+        transition={{ duration: 0.08 }}
+      >
+        <RadioComms log={race.radioLog} />
+        <BoxBoxProtocol race={race} onConfirm={handleConfirmPit} />
+      </motion.div>
+    </motion.div>
   );
 }
