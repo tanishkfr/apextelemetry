@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence, useMotionValue, useTransform, animate } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 
+// --- CONSTANTS & TYPES ---
 const C = {
-  glass: 'bg-white/[0.02] backdrop-blur-2xl border border-white/[0.05] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] rounded-2xl',
-  label: 'text-[9px] tracking-[0.25em] text-white/40 font-sans uppercase font-medium',
-  value: 'font-mono text-white',
-  mint: '#00FFAA',
-  amber: '#F5A623',
-  crimson: '#FF2A2A',
+  bg: 'bg-[#000000]',
+  panel: 'bg-[#050505] border border-[#333333]',
+  label: 'text-[9px] tracking-[0.3em] text-[#666666] uppercase font-bold',
+  value: 'text-white font-bold tracking-tighter',
   cyan: '#00E5FF',
+  magenta: '#FF007F',
+  acid: '#00FFAA',
+  yellow: '#F5A623',
+  red: '#FF2A2A',
 };
 
 interface Telemetry {
@@ -16,273 +19,300 @@ interface Telemetry {
   lapProgress: number;
   gear: number;
   rpm: number;
+  speed: number;
   throttle: number;
   brake: number;
-  gX: number;
-  gY: number;
-  speed: number;
+  ersSoc: number;
+  ersMode: 'OVERTAKE' | 'BUILD' | 'BALANCED';
+  ersHarvest: number;
+  brakeTemps: [number, number, number, number]; // FL, FR, RL, RR
+  tyreSurface: [number, number, number, number];
+  tyreCarcass: [number, number, number, number];
+  microSectors: ('none' | 'green' | 'purple' | 'yellow')[];
+  chartData: { actual: number; target: number }[];
 }
 
-const TickNumber = ({ value, className }: { value: string | number, className?: string }) => (
-  <div className={`relative inline-flex overflow-hidden ${className || ''}`}>
-    <AnimatePresence mode="popLayout">
-      <motion.span key={value} initial={{ y: -15, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 15, opacity: 0 }} transition={{ duration: 0.2, ease: "easeOut" }}>
-        {value}
-      </motion.span>
-    </AnimatePresence>
-  </div>
-);
+// --- UTILS ---
+const formatTemp = (t: number) => Math.round(t).toString().padStart(4, '0');
 
-const NoiseOverlay = () => (
-  <div className="pointer-events-none fixed inset-0 z-50 opacity-[0.04] mix-blend-overlay" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }} />
-);
+// --- COMPONENTS ---
 
-const GlassPanel = ({ children, className = '' }: { children: React.ReactNode, className?: string }) => (
-  <div className={`${C.glass} p-5 ${className}`}>
-    {children}
-  </div>
-);
-
-const TrackMap = ({ progress }: { progress: number }) => {
-  // Simplified Monza-like path
-  const pathData = "M 40 160 L 40 100 Q 40 80 60 70 L 120 40 Q 140 30 160 40 L 220 70 Q 240 80 260 70 L 280 60 Q 290 55 290 70 L 290 120 Q 290 140 270 150 L 220 170 Q 200 180 180 170 L 120 140 Q 100 130 80 140 L 60 150 Q 40 160 40 160 Z";
-  
-  return (
-    <GlassPanel className="flex flex-col relative overflow-hidden">
-      <div className={C.label}>Track Position</div>
-      <div className="flex-1 relative mt-4 flex items-center justify-center">
-        <svg viewBox="0 0 320 200" className="w-full h-full overflow-visible opacity-40">
-          <path d={pathData} fill="none" stroke="currentColor" strokeWidth="2" className="text-white/20" />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="relative w-full h-full max-w-[320px] max-h-[200px]">
-            <div 
-              className="absolute w-3 h-3 bg-[#00E5FF] rounded-full shadow-[0_0_15px_#00E5FF] -ml-1.5 -mt-1.5"
-              style={{ offsetPath: `path('${pathData}')`, offsetDistance: `${progress * 100}%` } as any}
-            />
-          </div>
-        </div>
-      </div>
-    </GlassPanel>
-  );
-};
-
-const FrictionCircle = ({ gX, gY }: { gX: number, gY: number }) => {
-  const [trail, setTrail] = useState<{x: number, y: number, id: number}[]>([]);
-  
-  useEffect(() => {
-    setTrail(t => [...t.slice(-15), { x: gX, y: gY, id: Date.now() }]);
-  }, [gX, gY]);
-
-  return (
-    <GlassPanel className="flex flex-col items-center justify-center relative">
-      <div className={`absolute top-5 left-5 ${C.label}`}>G-Force</div>
-      <div className="relative w-40 h-40 rounded-full border border-white/10 bg-white/[0.01] flex items-center justify-center mt-6">
-        {/* Crosshairs */}
-        <div className="absolute w-full h-[1px] bg-white/10" />
-        <div className="absolute h-full w-[1px] bg-white/10" />
-        {/* Concentric circles */}
-        <div className="absolute w-20 h-20 rounded-full border border-white/5" />
-        
-        {/* Trail */}
-        {trail.map((pt, i) => (
-          <div 
-            key={pt.id}
-            className="absolute w-2 h-2 bg-[#00FFAA] rounded-full"
-            style={{ 
-              left: `calc(50% + ${pt.x * 40}px)`, 
-              top: `calc(50% + ${pt.y * 40}px)`,
-              opacity: (i + 1) / trail.length * 0.5,
-              transform: 'translate(-50%, -50%) scale(0.8)'
-            }}
-          />
-        ))}
-        {/* Current Dot */}
-        <motion.div 
-          className="absolute w-3 h-3 bg-[#00FFAA] rounded-full shadow-[0_0_12px_#00FFAA]"
-          animate={{ x: gX * 40, y: gY * 40 }}
-          transition={{ type: 'spring', stiffness: 800, damping: 40 }}
-        />
-      </div>
-      <div className="flex gap-4 mt-4 text-xs font-mono text-white/70">
-        <div>X: {gX.toFixed(2)}</div>
-        <div>Y: {gY.toFixed(2)}</div>
-      </div>
-    </GlassPanel>
-  );
-};
-
-const TelemetryGauges = ({ throttle, brake, rpm, gear, speed }: Telemetry) => {
-  return (
-    <GlassPanel className="flex flex-col gap-6">
-      <div className="flex justify-between items-start">
-        <div className={C.label}>Powertrain</div>
-        <div className="text-right">
-          <div className="text-3xl font-mono font-light text-white flex items-baseline justify-end gap-1">
-            <TickNumber value={speed} /> <span className="text-sm text-white/40">KM/H</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-8">
-        {/* Gear Indicator */}
-        <div className="flex flex-col items-center justify-center w-20 h-24 bg-white/[0.03] rounded-xl border border-white/5 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]">
-          <div className="text-[10px] text-white/30 mb-1 font-sans">GEAR</div>
-          <div className="text-4xl font-mono text-[#00E5FF] font-bold drop-shadow-[0_0_8px_rgba(0,229,255,0.5)]">
-            <TickNumber value={gear} />
-          </div>
-        </div>
-
-        {/* RPM & Pedals */}
-        <div className="flex-1 flex flex-col gap-4">
-          {/* RPM */}
-          <div className="flex flex-col gap-1">
-            <div className="flex justify-between text-[10px] font-mono text-white/50">
-              <span>RPM</span>
-              <span><TickNumber value={rpm} /> / 12500</span>
-            </div>
-            <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-              <motion.div 
-                className="h-full bg-gradient-to-r from-[#00E5FF] to-[#FF2A2A]"
-                animate={{ width: `${(rpm / 12500) * 100}%` }}
-                transition={{ duration: 0.1 }}
-              />
-            </div>
-          </div>
-          
-          {/* Pedals */}
-          <div className="flex gap-4">
-            <div className="flex-1 flex flex-col gap-1">
-              <div className="text-[9px] font-mono text-white/40">THR {Math.round(throttle)}%</div>
-              <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                <motion.div className="h-full bg-[#00FFAA]" animate={{ width: `${throttle}%` }} transition={{ duration: 0.05 }} />
-              </div>
-            </div>
-            <div className="flex-1 flex flex-col gap-1">
-              <div className="text-[9px] font-mono text-white/40">BRK {Math.round(brake)}%</div>
-              <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
-                <motion.div className="h-full bg-[#FF2A2A]" animate={{ width: `${brake}%` }} transition={{ duration: 0.05 }} />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </GlassPanel>
-  );
-};
-
-const TyreDeltaGraph = () => {
-  return (
-    <GlassPanel className="flex flex-col flex-1 min-h-[200px] relative">
-      <div className={C.label}>Predictive Tyre Delta</div>
-      <div className="flex-1 mt-4 relative">
-        <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" className="overflow-visible">
-          <defs>
-            <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(0, 255, 170, 0.4)" />
-              <stop offset="100%" stopColor="rgba(0, 255, 170, 0.0)" />
-            </linearGradient>
-            <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#00FFAA" />
-              <stop offset="100%" stopColor="#F5A623" />
-            </linearGradient>
-          </defs>
-          
-          {/* Grid lines */}
-          <line x1="0" y1="25" x2="100" y2="25" stroke="white" strokeOpacity="0.05" strokeDasharray="2 2" />
-          <line x1="0" y1="50" x2="100" y2="50" stroke="white" strokeOpacity="0.05" strokeDasharray="2 2" />
-          <line x1="0" y1="75" x2="100" y2="75" stroke="white" strokeOpacity="0.05" strokeDasharray="2 2" />
-
-          {/* Area */}
-          <motion.path 
-            d="M 0,100 L 0,60 Q 25,40 50,50 T 100,20 L 100,100 Z" 
-            fill="url(#areaGrad)" 
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1 }}
-          />
-          {/* Line */}
-          <motion.path 
-            d="M 0,60 Q 25,40 50,50 T 100,20" 
-            fill="none" stroke="url(#lineGrad)" strokeWidth="2"
-            initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.5, ease: "easeInOut" }}
-          />
-        </svg>
-      </div>
-    </GlassPanel>
-  );
-};
-
-const BoxBoxProtocol = ({ onConfirm }: { onConfirm: () => void }) => {
-  const [status, setStatus] = useState<'IDLE'|'DRAGGING'|'CONFIRMED'>('IDLE');
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [trackWidth, setTrackWidth] = useState(0);
-  const thumbWidth = 56;
-  const x = useMotionValue(0);
-
-  useEffect(() => {
-    if (trackRef.current) setTrackWidth(trackRef.current.offsetWidth);
-  }, []);
-
-  const handleDragEnd = () => {
-    if (status === 'CONFIRMED') return;
-    const currentX = x.get();
-    const max = trackWidth - thumbWidth;
+const BrutalPanel = ({ children, className = '', title = '' }: { children: React.ReactNode, className?: string, title?: string }) => (
+  <div className={`${C.panel} relative flex flex-col ${className}`}>
+    {/* Corner accents */}
+    <div className="absolute top-0 left-0 w-1.5 h-1.5 border-t border-l border-[#666] -mt-[1px] -ml-[1px]" />
+    <div className="absolute top-0 right-0 w-1.5 h-1.5 border-t border-r border-[#666] -mt-[1px] -mr-[1px]" />
+    <div className="absolute bottom-0 left-0 w-1.5 h-1.5 border-b border-l border-[#666] -mb-[1px] -ml-[1px]" />
+    <div className="absolute bottom-0 right-0 w-1.5 h-1.5 border-b border-r border-[#666] -mb-[1px] -mr-[1px]" />
     
-    if (currentX / max < 0.9) {
-      animate(x, 0, { type: 'spring', stiffness: 300, damping: 25 });
-    } else {
-      setStatus('CONFIRMED');
-      animate(x, max, { duration: 0.1 });
-      onConfirm();
-      setTimeout(() => {
-        setStatus('IDLE');
-        animate(x, 0, { type: 'spring', stiffness: 200, damping: 20 });
-      }, 4000);
-    }
-  };
-
-  return (
-    <GlassPanel className="flex flex-col gap-4">
-      <div className={C.label}>Strategic Command</div>
-      <div 
-        className="relative h-16 bg-black/40 rounded-xl border border-white/10 flex items-center justify-center overflow-hidden shadow-[inset_0_0_20px_rgba(0,0,0,0.8)]"
-        ref={trackRef}
-      >
-        <div className={`absolute inset-0 flex items-center justify-center font-sans font-bold tracking-[0.3em] text-xs pointer-events-none transition-colors duration-500 ${status === 'CONFIRMED' ? 'text-[#F5A623] drop-shadow-[0_0_8px_rgba(245,166,35,0.8)]' : 'text-white/20'}`}>
-          {status === 'CONFIRMED' ? 'PIT CALL TRANSMITTED' : 'SLIDE TO BOX'}
-        </div>
-        
-        <motion.div 
-          className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-[#F5A623]/20 to-transparent pointer-events-none"
-          style={{ width: useTransform(x, v => v + thumbWidth/2) }}
-        />
-
-        <motion.div
-          className="absolute left-1 top-1 bottom-1 w-14 bg-gradient-to-b from-gray-200 to-gray-400 rounded-lg shadow-[0_2px_10px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.8)] flex items-center justify-center cursor-grab active:cursor-grabbing z-10 border border-gray-500"
-          style={{ x }}
-          drag="x"
-          dragConstraints={{ left: 0, right: trackWidth - thumbWidth - 8 }}
-          dragElastic={0.05}
-          dragMomentum={false}
-          onDragEnd={handleDragEnd}
-        >
-          <div className="flex gap-1">
-            <div className="w-0.5 h-4 bg-gray-500/50 rounded-full" />
-            <div className="w-0.5 h-4 bg-gray-500/50 rounded-full" />
-            <div className="w-0.5 h-4 bg-gray-500/50 rounded-full" />
-          </div>
-        </motion.div>
+    {title && (
+      <div className="border-b border-[#333] px-3 py-1.5 flex justify-between items-center bg-[#0A0A0A]">
+        <span className={C.label}>{title}</span>
+        <div className="w-1.5 h-1.5 bg-[#333]" />
       </div>
-    </GlassPanel>
+    )}
+    <div className="p-4 flex-1 flex flex-col">
+      {children}
+    </div>
+  </div>
+);
+
+const PanoramicTrack = ({ progress }: { progress: number }) => {
+  // A long, jagged, horizontal track path
+  const pathData = "M 0 50 L 100 50 L 150 20 L 300 20 L 350 80 L 500 80 L 550 50 L 700 50 L 750 30 L 850 30 L 900 70 L 950 70 L 1000 50";
+  
+  return (
+    <BrutalPanel className="h-32 w-full overflow-hidden" title="TRK-POS // GLOBAL MAPPING">
+      <div className="relative w-full h-full flex items-center">
+        <svg viewBox="0 0 1000 100" preserveAspectRatio="none" className="w-full h-full absolute inset-0">
+          {/* Grid lines */}
+          <line x1="0" y1="20" x2="1000" y2="20" stroke="#111" strokeWidth="1" />
+          <line x1="0" y1="50" x2="1000" y2="50" stroke="#222" strokeWidth="1" strokeDasharray="4 4" />
+          <line x1="0" y1="80" x2="1000" y2="80" stroke="#111" strokeWidth="1" />
+          
+          {/* Track Path */}
+          <path d={pathData} fill="none" stroke="#444" strokeWidth="2" />
+        </svg>
+        
+        {/* Progress Dot */}
+        <div className="absolute inset-0 pointer-events-none">
+          <div 
+            className="absolute w-2 h-8 bg-[#00E5FF] shadow-[0_0_10px_#00E5FF] -ml-1 -mt-4 border border-white"
+            style={{ offsetPath: `path('${pathData}')`, offsetDistance: `${progress * 100}%` } as any}
+          />
+        </div>
+      </div>
+    </BrutalPanel>
   );
 };
+
+const Powertrain = ({ speed, rpm, gear, throttle, brake }: Telemetry) => (
+  <BrutalPanel title="PWR-TRN // TELEMETRY">
+    <div className="flex justify-between items-end mb-6">
+      <div className="flex flex-col">
+        <span className={C.label}>SPEED</span>
+        <div className="flex items-baseline gap-1">
+          <span className={`${C.value} text-5xl text-[#00E5FF]`}>{speed.toString().padStart(3, '0')}</span>
+          <span className="text-[#666] text-xs">KPH</span>
+        </div>
+      </div>
+      <div className="flex flex-col items-end">
+        <span className={C.label}>GEAR</span>
+        <AnimatePresence mode="wait">
+          <motion.span 
+            key={gear}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.2 }}
+            className={`${C.value} text-5xl text-[#FF007F]`}
+          >
+            {gear}
+          </motion.span>
+        </AnimatePresence>
+      </div>
+    </div>
+
+    <div className="flex flex-col gap-4">
+      <div>
+        <div className="flex justify-between mb-1">
+          <span className={C.label}>RPM</span>
+          <span className="text-xs text-white">{Math.round(rpm)} <span className="text-[#666]">/ 12500</span></span>
+        </div>
+        <div className="h-2 w-full bg-[#111] border border-[#333]">
+          <motion.div 
+            className="h-full bg-[#00FFAA]"
+            style={{ width: `${(rpm / 12500) * 100}%` }}
+          />
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <div className="flex justify-between mb-1">
+            <span className={C.label}>THR</span>
+            <span className="text-xs text-[#00FFAA]">{Math.round(throttle)}%</span>
+          </div>
+          <div className="h-1 w-full bg-[#111]">
+            <motion.div className="h-full bg-[#00FFAA]" style={{ width: `${throttle}%` }} />
+          </div>
+        </div>
+        <div>
+          <div className="flex justify-between mb-1">
+            <span className={C.label}>BRK</span>
+            <span className="text-xs text-[#FF2A2A]">{Math.round(brake)}%</span>
+          </div>
+          <div className="h-1 w-full bg-[#111]">
+            <motion.div className="h-full bg-[#FF2A2A]" style={{ width: `${brake}%` }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  </BrutalPanel>
+);
+
+const BrakeTemps = ({ temps }: { temps: [number, number, number, number] }) => {
+  const getColor = (t: number) => t > 800 ? C.red : t > 500 ? C.yellow : 'white';
+  
+  return (
+    <BrutalPanel title="BRK-TMP // THERMALS">
+      <div className="grid grid-cols-2 gap-4 h-full">
+        {temps.map((t, i) => (
+          <div key={i} className="border border-[#333] bg-[#0A0A0A] p-2 flex flex-col justify-between">
+            <span className={C.label}>{['FL', 'FR', 'RL', 'RR'][i]}</span>
+            <span className="text-2xl font-bold tracking-tighter" style={{ color: getColor(t) }}>
+              {formatTemp(t)}<span className="text-xs text-[#666]">°C</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </BrutalPanel>
+  );
+};
+
+const TyreTemps = ({ surface, carcass }: { surface: [number, number, number, number], carcass: [number, number, number, number] }) => (
+  <BrutalPanel title="TYR-TMP // SURF/CARC">
+    <div className="grid grid-cols-2 gap-4 h-full">
+      {surface.map((s, i) => (
+        <div key={i} className="border border-[#333] bg-[#0A0A0A] p-2 flex flex-col gap-2">
+          <span className={C.label}>{['FL', 'FR', 'RL', 'RR'][i]}</span>
+          <div className="flex justify-between items-end">
+            <div className="flex flex-col">
+              <span className="text-[8px] text-[#666]">SURF</span>
+              <span className="text-lg text-[#00E5FF] font-bold">{Math.round(s)}°</span>
+            </div>
+            <div className="flex flex-col items-end">
+              <span className="text-[8px] text-[#666]">CARC</span>
+              <span className="text-lg text-white font-bold">{Math.round(carcass[i])}°</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </BrutalPanel>
+);
+
+const ERSMetrics = ({ ersSoc, ersMode, ersHarvest }: Telemetry) => (
+  <BrutalPanel title="ERS-SYS // KINETIC">
+    <div className="flex flex-col h-full justify-between gap-4">
+      <div>
+        <div className="flex justify-between items-end mb-1">
+          <span className={C.label}>STATE OF CHARGE</span>
+          <span className="text-2xl text-[#00FFAA] font-bold">{Math.round(ersSoc)}%</span>
+        </div>
+        <div className="h-4 w-full bg-[#111] border border-[#333] p-[1px]">
+          <motion.div className="h-full bg-[#00FFAA]" style={{ width: `${ersSoc}%` }} />
+        </div>
+      </div>
+      
+      <div className="flex justify-between items-center border-t border-b border-[#333] py-2">
+        <span className={C.label}>DEPLOY MODE</span>
+        <span className={`text-lg font-bold ${ersMode === 'OVERTAKE' ? 'text-[#FF007F]' : ersMode === 'BUILD' ? 'text-[#00E5FF]' : 'text-[#00FFAA]'}`}>
+          [{ersMode}]
+        </span>
+      </div>
+      
+      <div className="flex justify-between items-end">
+        <span className={C.label}>HARVEST RATE</span>
+        <span className="text-xl text-white font-bold">+{ersHarvest.toFixed(1)} <span className="text-xs text-[#666]">kW</span></span>
+      </div>
+    </div>
+  </BrutalPanel>
+);
+
+const MicroSectors = ({ sectors }: { sectors: Telemetry['microSectors'] }) => (
+  <BrutalPanel title="M-SEC // DELTA ANALYSIS">
+    <div className="flex gap-1 h-12 w-full">
+      {sectors.map((state, i) => {
+        let bg = 'bg-[#111]';
+        if (state === 'green') bg = 'bg-[#00FFAA]';
+        if (state === 'purple') bg = 'bg-[#FF007F]';
+        if (state === 'yellow') bg = 'bg-[#F5A623]';
+        
+        return (
+          <div key={i} className={`flex-1 ${bg} border border-black transition-colors duration-75`} />
+        );
+      })}
+    </div>
+  </BrutalPanel>
+);
+
+const AggressiveChart = ({ data }: { data: Telemetry['chartData'] }) => {
+  const maxPts = 100;
+  const width = 800;
+  const height = 200;
+  
+  const minVal = -1.0;
+  const maxVal = 2.0;
+  
+  const getY = (val: number) => height - ((val - minVal) / (maxVal - minVal)) * height;
+  const getX = (index: number) => (index / (maxPts - 1)) * width;
+
+  const actualPoints = data.map((d, i) => `${getX(i)},${getY(d.actual)}`).join(' ');
+  const targetPoints = data.map((d, i) => `${getX(i)},${getY(d.target)}`).join(' ');
+
+  const latestActual = data.length > 0 ? data[data.length - 1].actual : 0;
+  const latestX = data.length > 0 ? getX(data.length - 1) : 0;
+  const latestY = getY(latestActual);
+
+  return (
+    <BrutalPanel title="TYR-DLT // PREDICTIVE DEGRADATION" className="flex-1">
+      <div className="relative w-full h-full flex-1 border border-[#333] bg-[#050505] overflow-hidden">
+        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+          {/* Y-Axis Grid */}
+          {[0, 0.5, 1.0, 1.5].map(v => (
+            <g key={v}>
+              <line x1="0" y1={getY(v)} x2={width} y2={getY(v)} stroke="#222" strokeWidth="1" strokeDasharray="4 4" />
+              <text x="5" y={getY(v) - 5} fill="#666" fontSize="10" fontFamily="monospace">{v.toFixed(1)}</text>
+            </g>
+          ))}
+          
+          {/* Target Line */}
+          <polyline points={targetPoints} fill="none" stroke="#00E5FF" strokeWidth="1" strokeDasharray="2 2" />
+          
+          {/* Actual Line */}
+          <polyline points={actualPoints} fill="none" stroke="#FF007F" strokeWidth="2" />
+          
+          {/* Crosshair */}
+          {data.length > 0 && (
+            <g>
+              <line x1={latestX} y1="0" x2={latestX} y2={height} stroke="#fff" strokeWidth="1" opacity="0.5" />
+              <line x1="0" y1={latestY} x2={width} y2={latestY} stroke="#fff" strokeWidth="1" opacity="0.5" />
+              <circle cx={latestX} cy={latestY} r="4" fill="#FF007F" />
+              <rect x={latestX + 10} y={latestY - 10} width="40" height="20" fill="#FF007F" />
+              <text x={latestX + 15} y={latestY + 4} fill="#000" fontSize="12" fontWeight="bold" fontFamily="monospace">
+                {latestActual.toFixed(2)}
+              </text>
+            </g>
+          )}
+        </svg>
+      </div>
+    </BrutalPanel>
+  );
+};
+
+// --- MAIN APP ---
 
 export default function APEXTelemetry() {
   const [telemetry, setTelemetry] = useState<Telemetry>({
-    lap: 42, lapProgress: 0, gear: 6, rpm: 10200, throttle: 85, brake: 0, gX: 0, gY: 0, speed: 245
+    lap: 1, lapProgress: 0, gear: 1, rpm: 4000, speed: 0, throttle: 0, brake: 0,
+    ersSoc: 100, ersMode: 'BALANCED', ersHarvest: 0,
+    brakeTemps: [200, 200, 200, 200],
+    tyreSurface: [80, 80, 80, 80],
+    tyreCarcass: [90, 90, 90, 90],
+    microSectors: Array(20).fill('none'),
+    chartData: []
   });
-  const [isPitAmberGlow, setIsPitAmberGlow] = useState(false);
 
   const telRef = useRef(telemetry);
+  const frameCount = useRef(0);
+
+  // Pre-generate a lap's worth of sector colors for simulation
+  const lapSectorColors = useRef<('green'|'purple'|'yellow')[]>(
+    Array(20).fill('none').map(() => {
+      const r = Math.random();
+      return r > 0.8 ? 'purple' : r > 0.3 ? 'green' : 'yellow';
+    })
+  );
 
   useEffect(() => {
     let rafId: number;
@@ -291,39 +321,97 @@ export default function APEXTelemetry() {
     const loop = (time: number) => {
       const dt = (time - lastTime) / 1000;
       lastTime = time;
+      frameCount.current++;
 
       const t = telRef.current;
       
-      // Simulate driving dynamics
+      // Driving dynamics simulation
       let newThrottle = t.throttle + (Math.random() * 40 - 20);
       newThrottle = Math.max(0, Math.min(100, newThrottle));
       
       let newBrake = 0;
       if (newThrottle < 10) {
-        newBrake = t.brake + (Math.random() * 50 - 10);
+        newBrake = t.brake + (Math.random() * 60 - 10);
         newBrake = Math.max(0, Math.min(100, newBrake));
       }
 
-      let newRpm = t.rpm + (newThrottle > 50 ? 200 : -300) + (Math.random() * 100 - 50);
+      let newRpm = t.rpm + (newThrottle > 50 ? 300 : -400) + (Math.random() * 200 - 100);
       let newGear = t.gear;
       if (newRpm > 12000 && newGear < 8) { newGear++; newRpm = 8000; }
-      if (newRpm < 7000 && newGear > 1) { newGear--; newRpm = 11000; }
+      if (newRpm < 6000 && newGear > 1) { newGear--; newRpm = 11000; }
       newRpm = Math.max(4000, Math.min(12500, newRpm));
 
-      const newSpeed = Math.max(60, Math.min(340, t.speed + (newThrottle > 50 ? 1 : -2)));
+      const newSpeed = Math.max(0, Math.min(340, t.speed + (newThrottle > 50 ? 1.5 : newBrake > 20 ? -3 : -0.5)));
 
-      // G-Force simulation based on throttle/brake and random lateral
-      const targetGy = (newThrottle > 50 ? 1.5 : newBrake > 20 ? -3.5 : 0);
-      const newGy = t.gY + (targetGy - t.gY) * 0.1;
-      const targetGx = Math.sin(time / 1000) * 2.5 + (Math.random() * 1 - 0.5);
-      const newGx = t.gX + (targetGx - t.gX) * 0.1;
+      // Temps simulation
+      const newBrakeTemps = t.brakeTemps.map(bt => {
+        let next = bt;
+        if (newBrake > 0) next += newBrake * 0.5;
+        else next -= 2;
+        return Math.max(200, Math.min(1200, next));
+      }) as [number, number, number, number];
 
-      const newProgress = (t.lapProgress + dt * 0.05) % 1;
-      const newLap = t.lapProgress > 0.99 && newProgress < 0.01 ? t.lap + 1 : t.lap;
+      const newTyreSurface = t.tyreSurface.map((st, i) => {
+        let next = st;
+        next += (newThrottle * 0.01) + (newBrake * 0.02);
+        next -= 0.5; // cooling
+        return Math.max(80, Math.min(140, next));
+      }) as [number, number, number, number];
 
-      const nextTel = {
-        lap: newLap, lapProgress: newProgress, gear: newGear, rpm: newRpm,
-        throttle: newThrottle, brake: newBrake, gX: newGx, gY: newGy, speed: Math.round(newSpeed)
+      const newTyreCarcass = t.tyreCarcass.map((ct, i) => {
+        // Carcass slowly follows surface
+        return ct + (newTyreSurface[i] - ct) * 0.01;
+      }) as [number, number, number, number];
+
+      // ERS Simulation
+      let newErsMode = t.ersMode;
+      if (newThrottle > 90) newErsMode = 'OVERTAKE';
+      else if (newBrake > 50) newErsMode = 'BUILD';
+      else newErsMode = 'BALANCED';
+
+      let newErsSoc = t.ersSoc;
+      let newHarvest = 0;
+      if (newErsMode === 'OVERTAKE') newErsSoc -= 0.1;
+      if (newErsMode === 'BUILD') { newErsSoc += 0.2; newHarvest = newBrake * 1.5; }
+      newErsSoc = Math.max(0, Math.min(100, newErsSoc));
+
+      // Track Progress & Micro Sectors
+      let newProgress = t.lapProgress + (newSpeed / 340) * dt * 0.02;
+      let newLap = t.lap;
+      let newMicroSectors = [...t.microSectors];
+
+      if (newProgress >= 1) {
+        newProgress = 0;
+        newLap++;
+        newMicroSectors = Array(20).fill('none');
+        // Generate new lap sector colors
+        lapSectorColors.current = Array(20).fill('none').map(() => {
+          const r = Math.random();
+          return r > 0.8 ? 'purple' : r > 0.3 ? 'green' : 'yellow';
+        });
+      }
+
+      const currentSectorIdx = Math.floor(newProgress * 20);
+      for (let i = 0; i < 20; i++) {
+        if (i < currentSectorIdx) newMicroSectors[i] = lapSectorColors.current[i];
+        else if (i === currentSectorIdx) newMicroSectors[i] = frameCount.current % 10 < 5 ? lapSectorColors.current[i] : 'none'; // Flashing
+        else newMicroSectors[i] = 'none';
+      }
+
+      // Chart Data (update every 5 frames to create jagged look)
+      let newChartData = t.chartData;
+      if (frameCount.current % 5 === 0) {
+        const actual = Math.sin(time / 2000) * 0.5 + (Math.random() * 0.4 - 0.2) + 0.5;
+        const target = Math.sin(time / 2000) * 0.5 + 0.4;
+        newChartData = [...t.chartData, { actual, target }].slice(-100);
+      }
+
+      const nextTel: Telemetry = {
+        lap: newLap, lapProgress: newProgress, gear: newGear, rpm: newRpm, speed: Math.round(newSpeed),
+        throttle: newThrottle, brake: newBrake,
+        ersSoc: newErsSoc, ersMode: newErsMode, ersHarvest: newHarvest,
+        brakeTemps: newBrakeTemps, tyreSurface: newTyreSurface, tyreCarcass: newTyreCarcass,
+        microSectors: newMicroSectors, chartData: newChartData
       };
 
       telRef.current = nextTel;
@@ -337,81 +425,34 @@ export default function APEXTelemetry() {
   }, []);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#050505] to-black text-white font-sans selection:bg-[#00E5FF]/30">
-      <NoiseOverlay />
+    <div className={`w-screen h-screen ${C.bg} text-white font-['JetBrains_Mono',monospace] p-4 flex flex-col gap-4 overflow-hidden selection:bg-[#FF007F]/30`}>
       
-      {/* Global Amber Glow */}
-      <AnimatePresence>
-        {isPitAmberGlow && (
-          <motion.div 
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="absolute inset-0 pointer-events-none z-40 shadow-[inset_0_0_150px_rgba(245,166,35,0.15)] border-[4px] border-[#F5A623]/20"
-          />
-        )}
-      </AnimatePresence>
+      {/* TOP HEADER ROW */}
+      <PanoramicTrack progress={telemetry.lapProgress} />
 
-      <div className="relative z-10 w-full h-full p-6 grid grid-cols-[320px_1fr_340px] gap-6">
+      {/* BOTTOM DATA GRID */}
+      <div className="flex-1 grid grid-cols-4 gap-4 min-h-0">
         
-        {/* LEFT COLUMN */}
-        <div className="flex flex-col gap-6">
-          <GlassPanel className="flex items-center justify-between">
-            <div>
-              <div className={C.label}>Session</div>
-              <div className="text-2xl font-mono mt-1">Q3</div>
-            </div>
-            <div className="text-right">
-              <div className={C.label}>Time Remaining</div>
-              <div className="text-2xl font-mono mt-1 text-[#00FFAA]">04:12.8</div>
-            </div>
-          </GlassPanel>
-          
-          <TrackMap progress={telemetry.lapProgress} />
-          <FrictionCircle gX={telemetry.gX} gY={telemetry.gY} />
+        {/* COL 1: Powertrain & ERS */}
+        <div className="col-span-1 flex flex-col gap-4">
+          <Powertrain {...telemetry} />
+          <ERSMetrics {...telemetry} />
         </div>
 
-        {/* CENTER COLUMN */}
-        <div className="flex flex-col gap-6">
-          <TelemetryGauges {...telemetry} />
-          <TyreDeltaGraph />
-          
-          {/* Sector Times */}
-          <GlassPanel className="grid grid-cols-3 divide-x divide-white/10 text-center">
-            <div className="px-4">
-              <div className={C.label}>Sector 1</div>
-              <div className="text-xl font-mono mt-2 text-[#00FFAA]">27.431</div>
-            </div>
-            <div className="px-4">
-              <div className={C.label}>Sector 2</div>
-              <div className="text-xl font-mono mt-2 text-white">38.102</div>
-            </div>
-            <div className="px-4">
-              <div className={C.label}>Sector 3</div>
-              <div className="text-xl font-mono mt-2 text-[#FF2A2A]">24.899</div>
-            </div>
-          </GlassPanel>
+        {/* COL 2: Thermals */}
+        <div className="col-span-1 flex flex-col gap-4">
+          <BrakeTemps temps={telemetry.brakeTemps} />
+          <TyreTemps surface={telemetry.tyreSurface} carcass={telemetry.tyreCarcass} />
         </div>
 
-        {/* RIGHT COLUMN */}
-        <div className="flex flex-col gap-6">
-          <GlassPanel className="flex-1 flex flex-col">
-            <div className={C.label}>Live Telemetry Feed</div>
-            <div className="flex-1 mt-4 flex flex-col gap-2 font-mono text-[10px] text-white/60 overflow-hidden">
-              <div className="flex gap-4"><span className="text-[#00E5FF]">[SYS]</span> ERS Deployment Active</div>
-              <div className="flex gap-4"><span className="text-[#F5A623]">[ENG]</span> Brake bias target 54%</div>
-              <div className="flex gap-4"><span className="text-white/40">[DAT]</span> Syncing packet 0x4F2A</div>
-              <div className="flex gap-4"><span className="text-[#00FFAA]">[AER]</span> DRS Enabled</div>
-              <div className="flex gap-4"><span className="text-white/40">[DAT]</span> Tyre core temp nominal</div>
-              <div className="flex gap-4"><span className="text-[#FF2A2A]">[WRN]</span> Minor clipping Turn 4</div>
-            </div>
-          </GlassPanel>
-          
-          <BoxBoxProtocol onConfirm={() => {
-            setIsPitAmberGlow(true);
-            setTimeout(() => setIsPitAmberGlow(false), 4000);
-          }} />
+        {/* COL 3 & 4: Analysis & Charts */}
+        <div className="col-span-2 flex flex-col gap-4">
+          <MicroSectors sectors={telemetry.microSectors} />
+          <AggressiveChart data={telemetry.chartData} />
         </div>
 
       </div>
     </div>
   );
 }
+
